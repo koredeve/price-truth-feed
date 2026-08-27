@@ -2,6 +2,7 @@
 
 from genlayer import *
 import json
+import decimal
 
 
 ERROR_EXPECTED = "[EXPECTED]"
@@ -100,25 +101,27 @@ class PriceTruthFeed(gl.Contract):
 				)
 			values.sort()
 			median = values[len(values) // 2]
-			return {"price_atto": int(round(median * PRICE_SCALE))}
+			# Canonical price bucket: quantize the median to exactly 4 decimals.
+			# Validators recompute this identically — agreement is EXACT on the
+			# normalized value, so one deterministic number becomes on-chain truth.
+			dq = decimal.Decimal(str(median)).quantize(decimal.Decimal("0.0001"))
+			return {"bucket": str(dq), "sources": len(values)}
 
 		def validator_fn(leaders_res: gl.vm.Result) -> bool:
 			if not isinstance(leaders_res, gl.vm.Return):
 				return _handle_leader_error(leaders_res, leader_fn)
 			leader_data = leaders_res.calldata
 			fresh = leader_fn()
-			leader_atto = int(leader_data.get("price_atto", -1))
-			fresh_atto = int(fresh.get("price_atto", -1))
-			if leader_atto < 0 or fresh_atto <= 0:
-				return False
 			return (
-				abs(leader_atto - fresh_atto) * AGREEMENT_DENOMINATOR
-				<= fresh_atto * AGREEMENT_NUMERATOR
+				str(leader_data.get("bucket", "")) == str(fresh.get("bucket", ""))
+				and str(fresh.get("bucket", "")) != ""
 			)
 
 		result = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
-		self.prices[pair] = u256(int(result["price_atto"]))
+		bucket_str = str(result["bucket"])
+		price_stored = u256(int(decimal.Decimal(bucket_str) * decimal.Decimal("1000000000000000000")))
+		self.prices[pair] = price_stored
 		self.update_count[pair] = self.update_count.get(pair, u256(0)) + u256(1)
 
 	@gl.public.view
