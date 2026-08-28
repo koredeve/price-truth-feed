@@ -1,5 +1,6 @@
 import json
 import re
+import decimal
 
 PAIR = "ETH/USD"
 UNKNOWN_PAIR = "DOGE/USD"
@@ -139,3 +140,44 @@ def test_update_count_increments_across_updates(
 
     assert contract.get_update_count(PAIR) == 2
     assert contract.get_price(PAIR) == MEDIAN_PRICE_ATTO
+
+
+def test_insufficient_usable_sources_reverts_transient(
+    direct_vm, direct_deploy, direct_alice
+):
+    """When only 1 source is available (less than MIN_USABLE_SOURCES=2), reverts with [TRANSIENT]."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    contract.set_sources(PAIR, URLS)
+
+    _mock_sources(
+        direct_vm,
+        bodies=[
+            json.dumps({"price": 100.0}),
+            "error",
+            "error",
+        ],
+        statuses=[200, 500, 500],
+    )
+    with direct_vm.expect_revert("[TRANSIENT]"):
+        contract.update_price(PAIR)
+
+
+def test_canonical_price_bucket_quantization(
+    direct_vm, direct_deploy, direct_alice
+):
+    """Prices with varying precision are quantized to exact canonical 4-decimal bucket."""
+    contract = _deploy(direct_vm, direct_deploy, direct_alice)
+    contract.set_sources(PAIR, URLS)
+
+    _mock_sources(
+        direct_vm,
+        bodies=[
+            json.dumps({"price": 2500.12345}),
+            json.dumps({"price": 2500.12349}),
+            json.dumps({"price": 2500.12341}),
+        ],
+    )
+    contract.update_price(PAIR)
+    # Median is 2500.12345 -> quantized to 2500.1234
+    assert contract.get_price(PAIR) == int(decimal.Decimal("2500.1234") * 10**18)
+
